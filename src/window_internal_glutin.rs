@@ -68,6 +68,11 @@ pub(crate) struct WindowHelperGlutin<UserEventType: 'static> {
     terminate_requested: bool,
     physical_size: UVec2,
     is_mouse_grabbed: Cell<bool>,
+    is_mouse_tracking: Cell<bool>,
+    is_promotion_display: bool,
+    last_mouse_move_time: Cell<std::time::Instant>,
+    last_frame_time: Cell<std::time::Instant>,
+    target_frame_interval: std::time::Duration,
 }
 
 impl<UserEventType> WindowHelperGlutin<UserEventType> {
@@ -77,6 +82,35 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
         event_proxy: EventLoopProxy<UserEventGlutin<UserEventType>>,
         initial_physical_size: UVec2,
     ) -> Self {
+        let refresh_rate = window
+            .current_monitor()
+            .and_then(|m| m.refresh_rate_millihertz())
+            .unwrap_or(60_000);
+
+        let is_promotion_display = refresh_rate > 60_000;
+
+        // Calculate target frame interval
+        let target_frame_interval = if is_promotion_display {
+            // Target actual refresh rate for ProMotion displays
+            std::time::Duration::from_nanos(
+                1_000_000_000u64 / (refresh_rate as u64 / 1000),
+            )
+        } else {
+            // For 60Hz displays, target 60 FPS
+            std::time::Duration::from_nanos(16_666_667) // ~60 FPS
+        };
+
+        if is_promotion_display {
+            log::info!("Detected ProMotion display with refresh rate {}Hz, targeting frame interval {:?}",
+                      refresh_rate / 1000, target_frame_interval);
+            log::info!(
+                "Target FPS: {:.1}",
+                1.0 / target_frame_interval.as_secs_f64()
+            );
+            log::debug!("Frame limiting enabled for ProMotion display");
+        }
+
+        let now = std::time::Instant::now();
         WindowHelperGlutin {
             window: Rc::clone(window),
             event_proxy,
@@ -84,6 +118,11 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
             terminate_requested: false,
             physical_size: initial_physical_size,
             is_mouse_grabbed: Cell::new(false),
+            is_mouse_tracking: Cell::new(false),
+            is_promotion_display,
+            last_mouse_move_time: Cell::new(now),
+            last_frame_time: Cell::new(now),
+            target_frame_interval,
         }
     }
 
@@ -94,8 +133,31 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
     }
 
     #[inline]
-    pub fn set_redraw_requested(&mut self, redraw_requested: bool) {
-        self.redraw_requested.set(redraw_requested);
+    pub fn set_redraw_requested(&self, requested: bool) {
+        self.redraw_requested.set(requested);
+    }
+
+    #[inline]
+    pub fn is_mouse_tracking(&self) -> bool {
+        self.is_mouse_tracking.get()
+    }
+
+    #[inline]
+    pub fn set_mouse_tracking(&self, tracking: bool) {
+        self.is_mouse_tracking.set(tracking);
+        if tracking {
+            self.last_mouse_move_time.set(std::time::Instant::now());
+        }
+    }
+
+    #[inline]
+    pub fn is_promotion_display(&self) -> bool {
+        self.is_promotion_display
+    }
+
+    #[inline]
+    pub fn update_frame_time(&self) {
+        self.last_frame_time.set(std::time::Instant::now());
     }
 
     #[inline]
@@ -441,6 +503,9 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType> {
                 GlutinWindowEvent::CursorMoved { position, .. } => {
                     let position = Vector2::new(position.x, position.y).into_f32();
 
+                    // Mark mouse tracking as active
+                    helper.inner().set_mouse_tracking(true);
+
                     if helper.inner().is_mouse_grabbed.get() {
                         let central_position = helper.inner().physical_size / 2;
                         window
@@ -535,10 +600,38 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType> {
             },
 
             GlutinEvent::AboutToWait => {
+                // Check if mouse tracking should be disabled due to inactivity
+                if helper.inner().is_mouse_tracking() {
+                    let elapsed = helper.inner().last_mouse_move_time.get().elapsed();
+                    if elapsed > std::time::Duration::from_millis(100) {
+                        helper.inner().set_mouse_tracking(false);
+                    }
+                }
+
                 if helper.inner().is_redraw_requested() {
                     helper.inner().set_redraw_requested(false);
-                    handler.on_draw(helper);
-                    surface.swap_buffers(context).unwrap();
+
+                    if helper.inner().is_promotion_display() {
+                        // On ProMotion displays, enforce frame limiting with sleep
+                        let elapsed = helper.inner().last_frame_time.get().elapsed();
+
+                        // Always use display refresh rate for smooth rendering
+                        let active_frame_interval = helper.inner().target_frame_interval;
+
+                        if elapsed < active_frame_interval {
+                            let sleep_time = active_frame_interval - elapsed;
+                            std::thread::sleep(sleep_time);
+                        }
+
+                        helper.inner().update_frame_time();
+                        handler.on_draw(helper);
+                        surface.swap_buffers(context).unwrap();
+                    } else {
+                        // Standard behavior for non-ProMotion displays
+                        helper.inner().update_frame_time();
+                        handler.on_draw(helper);
+                        surface.swap_buffers(context).unwrap();
+                    }
                 }
             }
 
@@ -601,10 +694,24 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType> {
 
                     match action {
                         WindowEventLoopAction::Continue => {
-                            if helper.inner().is_redraw_requested() {
-                                target.set_control_flow(ControlFlow::Poll)
-                            } else {
-                                target.set_control_flow(ControlFlow::Wait)
+                            #[cfg(target_os = "macos")]
+                            {
+                                if helper.inner().is_promotion_display() {
+                                    // Always poll for ProMotion displays - frame limiting handled by sleep
+                                    target.set_control_flow(ControlFlow::Poll);
+                                } else if helper.inner().is_redraw_requested() {
+                                    target.set_control_flow(ControlFlow::Poll);
+                                } else {
+                                    target.set_control_flow(ControlFlow::Wait);
+                                }
+                            }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                if helper.inner().is_redraw_requested() {
+                                    target.set_control_flow(ControlFlow::Poll);
+                                } else {
+                                    target.set_control_flow(ControlFlow::Wait);
+                                }
                             }
                         }
                         WindowEventLoopAction::Exit => {
@@ -734,11 +841,40 @@ fn create_best_context<UserEventType>(
         };
 
         if options.vsync {
-            if let Err(err) = surface.set_swap_interval(
-                &context,
-                SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
-            ) {
-                log::error!("Error setting vsync, continuing anyway: {err:?}");
+            // On macOS ProMotion displays, use adaptive sync for better mouse responsiveness
+            #[cfg(target_os = "macos")]
+            {
+                let is_promotion_display = window
+                    .current_monitor()
+                    .and_then(|m| m.refresh_rate_millihertz())
+                    .map(|rate| rate > 60_000)
+                    .unwrap_or(false);
+
+                let swap_interval = if is_promotion_display {
+                    log::info!("Using DontWait VSync for ProMotion display with software frame limiting");
+                    SwapInterval::DontWait
+                } else {
+                    SwapInterval::Wait(NonZeroU32::new(1).unwrap())
+                };
+
+                if let Err(err) = surface.set_swap_interval(&context, swap_interval) {
+                    log::warn!("Failed to set preferred swap interval, falling back to standard VSync: {err:?}");
+                    if let Err(err) = surface.set_swap_interval(
+                        &context,
+                        SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
+                    ) {
+                        log::error!("Error setting vsync, continuing anyway: {err:?}");
+                    }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                if let Err(err) = surface.set_swap_interval(
+                    &context,
+                    SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
+                ) {
+                    log::error!("Error setting vsync, continuing anyway: {err:?}");
+                }
             }
         }
 

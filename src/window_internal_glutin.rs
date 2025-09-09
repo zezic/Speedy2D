@@ -22,49 +22,30 @@ use std::rc::Rc;
 
 use glutin::config::{Config, ConfigTemplateBuilder};
 use glutin::context::{
-    ContextApi,
-    ContextAttributesBuilder,
-    NotCurrentGlContext,
-    PossiblyCurrentContext,
-    Version
+    ContextApi, ContextAttributesBuilder, GlProfile, NotCurrentGlContext,
+    PossiblyCurrentContext, Version,
 };
 use glutin::display::{GetGlDisplay, GlDisplay};
 use glutin::surface::{
-    GlSurface,
-    Surface,
-    SurfaceAttributesBuilder,
-    SwapInterval,
-    WindowSurface
+    GlSurface, Surface, SurfaceAttributesBuilder, SwapInterval, WindowSurface,
 };
 use glutin_winit::{DisplayBuilder, GlWindow};
 use raw_window_handle::HasRawWindowHandle;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::error::EventLoopError;
 use winit::event::{
-    ElementState as GlutinElementState,
-    Event as GlutinEvent,
-    KeyEvent,
-    MouseScrollDelta as GlutinMouseScrollDelta,
-    TouchPhase,
-    WindowEvent as GlutinWindowEvent
+    ElementState as GlutinElementState, Event as GlutinEvent, KeyEvent,
+    MouseScrollDelta as GlutinMouseScrollDelta, TouchPhase,
+    WindowEvent as GlutinWindowEvent,
 };
 use winit::event_loop::{
-    ControlFlow,
-    EventLoop,
-    EventLoopBuilder,
-    EventLoopClosed,
-    EventLoopProxy
+    ControlFlow, EventLoop, EventLoopBuilder, EventLoopClosed, EventLoopProxy,
 };
 use winit::keyboard::{Key, KeyLocation, NamedKey};
 use winit::monitor::MonitorHandle;
 use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::window::{
-    CursorGrabMode,
-    Icon,
-    Window as GlutinWindow,
-    Window,
-    WindowBuilder,
-    WindowLevel
+    CursorGrabMode, Icon, Window as GlutinWindow, Window, WindowBuilder, WindowLevel,
 };
 
 use crate::dimen::{IVec2, UVec2, Vec2, Vector2};
@@ -72,117 +53,95 @@ use crate::error::{BacktraceError, ErrorMessage};
 use crate::glbackend::constants::GL_VERSION;
 use crate::glbackend::{GLBackend, GLBackendGlow};
 use crate::window::{
-    DrawingWindowHandler,
-    EventLoopSendError,
-    ModifiersState,
-    MouseButton,
-    MouseScrollDistance,
-    UserEventSender,
-    VirtualKeyCode,
-    WindowCreationError,
-    WindowCreationMode,
-    WindowCreationOptions,
-    WindowEventLoopAction,
-    WindowFullscreenMode,
-    WindowHandler,
-    WindowHelper,
-    WindowPosition,
-    WindowSize,
-    WindowStartupInfo
+    DrawingWindowHandler, EventLoopSendError, ModifiersState, MouseButton,
+    MouseScrollDistance, UserEventSender, VirtualKeyCode, WindowCreationError,
+    WindowCreationMode, WindowCreationOptions, WindowEventLoopAction,
+    WindowFullscreenMode, WindowHandler, WindowHelper, WindowPosition, WindowSize,
+    WindowStartupInfo,
 };
 use crate::GLRenderer;
 
-pub(crate) struct WindowHelperGlutin<UserEventType: 'static>
-{
+pub(crate) struct WindowHelperGlutin<UserEventType: 'static> {
     window: Rc<Window>,
     event_proxy: EventLoopProxy<UserEventGlutin<UserEventType>>,
     redraw_requested: Cell<bool>,
     terminate_requested: bool,
     physical_size: UVec2,
-    is_mouse_grabbed: Cell<bool>
+    is_mouse_grabbed: Cell<bool>,
 }
 
-impl<UserEventType> WindowHelperGlutin<UserEventType>
-{
+impl<UserEventType> WindowHelperGlutin<UserEventType> {
     #[inline]
     pub fn new(
         window: &Rc<Window>,
         event_proxy: EventLoopProxy<UserEventGlutin<UserEventType>>,
-        initial_physical_size: UVec2
-    ) -> Self
-    {
+        initial_physical_size: UVec2,
+    ) -> Self {
         WindowHelperGlutin {
             window: Rc::clone(window),
             event_proxy,
             redraw_requested: Cell::new(false),
             terminate_requested: false,
             physical_size: initial_physical_size,
-            is_mouse_grabbed: Cell::new(false)
+            is_mouse_grabbed: Cell::new(false),
         }
     }
 
     #[inline]
     #[must_use]
-    pub fn is_redraw_requested(&self) -> bool
-    {
+    pub fn is_redraw_requested(&self) -> bool {
         self.redraw_requested.get()
     }
 
     #[inline]
-    pub fn set_redraw_requested(&mut self, redraw_requested: bool)
-    {
+    pub fn set_redraw_requested(&mut self, redraw_requested: bool) {
         self.redraw_requested.set(redraw_requested);
     }
 
     #[inline]
-    pub fn get_event_loop_action(&self) -> WindowEventLoopAction
-    {
+    pub fn get_event_loop_action(&self) -> WindowEventLoopAction {
         match self.terminate_requested {
             true => WindowEventLoopAction::Exit,
-            false => WindowEventLoopAction::Continue
+            false => WindowEventLoopAction::Continue,
         }
     }
 
-    pub fn terminate_loop(&mut self)
-    {
+    pub fn terminate_loop(&mut self) {
         self.terminate_requested = true;
     }
 
     pub fn set_icon_from_rgba_pixels(
         &self,
         data: Vec<u8>,
-        size: UVec2
-    ) -> Result<(), BacktraceError<ErrorMessage>>
-    {
+        size: UVec2,
+    ) -> Result<(), BacktraceError<ErrorMessage>> {
         self.window.set_window_icon(Some(
             Icon::from_rgba(data, size.x, size.y).map_err(|err| {
                 ErrorMessage::msg_with_cause("Icon data was invalid", err)
-            })?
+            })?,
         ));
 
         Ok(())
     }
 
-    pub fn set_cursor_visible(&self, visible: bool)
-    {
+    pub fn set_cursor_visible(&self, visible: bool) {
         self.window.set_cursor_visible(visible);
     }
 
     pub fn set_cursor_grab(
         &self,
-        grabbed: bool
-    ) -> Result<(), BacktraceError<ErrorMessage>>
-    {
+        grabbed: bool,
+    ) -> Result<(), BacktraceError<ErrorMessage>> {
         let central_position = self.physical_size / 2;
         self.window
             .set_cursor_position(PhysicalPosition::new(
                 central_position.x as i32,
-                central_position.y as i32
+                central_position.y as i32,
             ))
             .map_err(|err| {
                 ErrorMessage::msg_with_cause(
                     "Failed to move cursor to center of window",
-                    err
+                    err,
                 )
             })?;
 
@@ -206,28 +165,24 @@ impl<UserEventType> WindowHelperGlutin<UserEventType>
                 }
                 Ok(())
             }
-            Err(err) => Err(ErrorMessage::msg_with_cause("Could not grab cursor", err))
+            Err(err) => Err(ErrorMessage::msg_with_cause("Could not grab cursor", err)),
         }
     }
 
-    pub fn set_resizable(&self, resizable: bool)
-    {
+    pub fn set_resizable(&self, resizable: bool) {
         self.window.set_resizable(resizable);
     }
 
     #[inline]
-    pub fn request_redraw(&self)
-    {
+    pub fn request_redraw(&self) {
         self.redraw_requested.set(true);
     }
 
-    pub fn set_title(&self, title: &str)
-    {
+    pub fn set_title(&self, title: &str) {
         self.window.set_title(title);
     }
 
-    pub fn set_fullscreen_mode(&self, mode: WindowFullscreenMode)
-    {
+    pub fn set_fullscreen_mode(&self, mode: WindowFullscreenMode) {
         let window = &self.window;
 
         window.set_fullscreen(match mode {
@@ -239,7 +194,7 @@ impl<UserEventType> WindowHelperGlutin<UserEventType>
 
         let is_fullscreen = match mode {
             WindowFullscreenMode::Windowed => false,
-            WindowFullscreenMode::FullscreenBorderless => true
+            WindowFullscreenMode::FullscreenBorderless => true,
         };
 
         if self
@@ -253,8 +208,7 @@ impl<UserEventType> WindowHelperGlutin<UserEventType>
         }
     }
 
-    pub fn set_size_pixels<S: Into<UVec2>>(&self, size: S)
-    {
+    pub fn set_size_pixels<S: Into<UVec2>>(&self, size: S) {
         let size = size.into();
 
         let _ = self
@@ -262,15 +216,13 @@ impl<UserEventType> WindowHelperGlutin<UserEventType>
             .request_inner_size(PhysicalSize::new(size.x, size.y));
     }
 
-    pub fn get_size_pixels(&self) -> UVec2
-    {
+    pub fn get_size_pixels(&self) -> UVec2 {
         let size = self.window.inner_size();
 
         UVec2::new(size.width, size.height)
     }
 
-    pub fn set_size_scaled_pixels<S: Into<Vec2>>(&self, size: S)
-    {
+    pub fn set_size_scaled_pixels<S: Into<Vec2>>(&self, size: S) {
         let size = size.into();
 
         let _ = self
@@ -278,16 +230,14 @@ impl<UserEventType> WindowHelperGlutin<UserEventType>
             .request_inner_size(LogicalSize::new(size.x, size.y));
     }
 
-    pub fn set_position_pixels<P: Into<IVec2>>(&self, position: P)
-    {
+    pub fn set_position_pixels<P: Into<IVec2>>(&self, position: P) {
         let position = position.into();
 
         self.window
             .set_outer_position(PhysicalPosition::new(position.x, position.y));
     }
 
-    pub fn set_position_scaled_pixels<P: Into<Vec2>>(&self, position: P)
-    {
+    pub fn set_position_scaled_pixels<P: Into<Vec2>>(&self, position: P) {
         let position = position.into();
 
         self.window
@@ -296,33 +246,28 @@ impl<UserEventType> WindowHelperGlutin<UserEventType>
 
     #[inline]
     #[must_use]
-    pub fn get_scale_factor(&self) -> f64
-    {
+    pub fn get_scale_factor(&self) -> f64 {
         self.window.scale_factor()
     }
 
-    pub fn create_user_event_sender(&self) -> UserEventSender<UserEventType>
-    {
+    pub fn create_user_event_sender(&self) -> UserEventSender<UserEventType> {
         UserEventSender::new(UserEventSenderGlutin::new(self.event_proxy.clone()))
     }
 }
 
-pub(crate) struct WindowGlutin<UserEventType: 'static>
-{
+pub(crate) struct WindowGlutin<UserEventType: 'static> {
     event_loop: EventLoop<UserEventGlutin<UserEventType>>,
     window: Rc<Window>,
     context: Rc<PossiblyCurrentContext>,
     surface: Rc<Surface<WindowSurface>>,
-    gl_backend: Rc<dyn GLBackend>
+    gl_backend: Rc<dyn GLBackend>,
 }
 
-impl<UserEventType: 'static> WindowGlutin<UserEventType>
-{
+impl<UserEventType: 'static> WindowGlutin<UserEventType> {
     pub fn new(
         title: &str,
-        options: WindowCreationOptions
-    ) -> Result<WindowGlutin<UserEventType>, BacktraceError<WindowCreationError>>
-    {
+        options: WindowCreationOptions,
+    ) -> Result<WindowGlutin<UserEventType>, BacktraceError<WindowCreationError>> {
         let event_loop: EventLoop<UserEventGlutin<UserEventType>> =
             EventLoopBuilder::with_user_event().build()?;
 
@@ -349,7 +294,7 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
                 },
                 match &monitor.name() {
                     None => "<unnamed>",
-                    Some(name) => name.as_str()
+                    Some(name) => name.as_str(),
                 }
             );
         }
@@ -357,13 +302,11 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
         let mut window_builder = WindowBuilder::new()
             .with_title(title)
             .with_resizable(options.resizable)
-            .with_window_level(
-                if options.always_on_top {
-                    WindowLevel::AlwaysOnTop
-                } else {
-                    WindowLevel::Normal
-                }
-            )
+            .with_window_level(if options.always_on_top {
+                WindowLevel::AlwaysOnTop
+            } else {
+                WindowLevel::Normal
+            })
             .with_maximized(options.maximized)
             .with_visible(false)
             .with_transparent(options.transparent)
@@ -377,14 +320,14 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
 
             WindowCreationMode::FullscreenBorderless => {
                 window_builder = window_builder.with_fullscreen(Some(
-                    winit::window::Fullscreen::Borderless(Some(primary_monitor.clone()))
+                    winit::window::Fullscreen::Borderless(Some(primary_monitor.clone())),
                 ));
             }
         }
 
         let (context, window, surface) =
             create_best_context(&window_builder, &event_loop, &options).ok_or_else(
-                || BacktraceError::new(WindowCreationError::SuitableContextNotFound)
+                || BacktraceError::new(WindowCreationError::SuitableContextNotFound),
             )?;
 
         if let WindowCreationMode::Windowed {
@@ -412,7 +355,7 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
                 context.display().get_proc_address(
                     CString::new(ptr)
                         .expect("Invalid GL function name string")
-                        .as_c_str()
+                        .as_c_str(),
                 ) as *const _
             })
         };
@@ -439,17 +382,15 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
             window: Rc::new(window),
             context: Rc::new(context),
             surface: Rc::new(surface),
-            gl_backend
+            gl_backend,
         })
     }
 
-    pub fn create_user_event_sender(&self) -> UserEventSender<UserEventType>
-    {
+    pub fn create_user_event_sender(&self) -> UserEventSender<UserEventType> {
         UserEventSender::new(UserEventSenderGlutin::new(self.event_loop.create_proxy()))
     }
 
-    pub fn get_inner_size_pixels(&self) -> UVec2
-    {
+    pub fn get_inner_size_pixels(&self) -> UVec2 {
         self.window.inner_size().into()
     }
 
@@ -459,10 +400,10 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
         surface: &Rc<Surface<WindowSurface>>,
         handler: &mut DrawingWindowHandler<UserEventType, Handler>,
         event: GlutinEvent<UserEventGlutin<UserEventType>>,
-        helper: &mut WindowHelper<UserEventType>
+        helper: &mut WindowHelper<UserEventType>,
     ) -> WindowEventLoopAction
     where
-        Handler: WindowHandler<UserEventType> + 'static
+        Handler: WindowHandler<UserEventType> + 'static,
     {
         match event {
             GlutinEvent::LoopExiting => return WindowEventLoopAction::Exit,
@@ -474,7 +415,7 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
                 UserEventGlutin::FullscreenStatusChanged(fullscreen) => {
                     handler.on_fullscreen_status_changed(helper, fullscreen)
                 }
-                UserEventGlutin::UserEvent(event) => handler.on_user_event(helper, event)
+                UserEventGlutin::UserEvent(event) => handler.on_user_event(helper, event),
             },
 
             GlutinEvent::WindowEvent { event, .. } => match event {
@@ -487,7 +428,7 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
                     log::info!("Resized: {:?}", physical_size);
                     if let (Ok(w), Ok(h)) = (
                         NonZeroU32::try_from(physical_size.width),
-                        NonZeroU32::try_from(physical_size.height)
+                        NonZeroU32::try_from(physical_size.height),
                     ) {
                         surface.resize(context, w, h);
                     }
@@ -505,7 +446,7 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
                         window
                             .set_cursor_position(PhysicalPosition::new(
                                 central_position.x as i32,
-                                central_position.y as i32
+                                central_position.y as i32,
                             ))
                             .unwrap();
 
@@ -538,14 +479,14 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
                             MouseScrollDistance::Lines {
                                 x: x as f64,
                                 y: y as f64,
-                                z: 0.0
+                                z: 0.0,
                             }
                         }
                         GlutinMouseScrollDelta::PixelDelta(pos) => {
                             MouseScrollDistance::Pixels {
                                 x: pos.x,
                                 y: pos.y,
-                                z: 0.0
+                                z: 0.0,
                             }
                         }
                     };
@@ -568,7 +509,7 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
                                 handler.on_key_down(
                                     helper,
                                     virtual_key_code,
-                                    event.physical_key.to_scancode().unwrap_or(0)
+                                    event.physical_key.to_scancode().unwrap_or(0),
                                 );
                             }
                         }
@@ -576,7 +517,7 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
                             handler.on_key_up(
                                 helper,
                                 virtual_key_code,
-                                event.physical_key.to_scancode().unwrap_or(0)
+                                event.physical_key.to_scancode().unwrap_or(0),
                             );
                         }
                     }
@@ -609,7 +550,7 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
 
     pub fn run_loop<Handler>(self, handler: Handler, renderer: GLRenderer) -> !
     where
-        Handler: WindowHandler<UserEventType> + 'static
+        Handler: WindowHandler<UserEventType> + 'static,
     {
         let window = self.window;
         let context = self.context;
@@ -623,12 +564,12 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
         let mut helper = WindowHelper::new(WindowHelperGlutin::new(
             &window,
             event_loop.create_proxy(),
-            initial_viewport_size_pixels
+            initial_viewport_size_pixels,
         ));
 
         handler.on_start(
             &mut helper,
-            WindowStartupInfo::new(initial_viewport_size_pixels, window.scale_factor())
+            WindowStartupInfo::new(initial_viewport_size_pixels, window.scale_factor()),
         );
 
         match helper.inner().get_event_loop_action() {
@@ -655,7 +596,7 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
                         &surface,
                         handler.as_mut().unwrap(),
                         event,
-                        &mut helper
+                        &mut helper,
                     );
 
                     match action {
@@ -672,7 +613,7 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
                         }
                     }
                 }
-            }
+            },
         );
 
         if let Err(err) = result {
@@ -685,23 +626,20 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType>
 
     #[inline]
     #[must_use]
-    pub fn gl_backend(&self) -> &Rc<dyn GLBackend>
-    {
+    pub fn gl_backend(&self) -> &Rc<dyn GLBackend> {
         &self.gl_backend
     }
 }
 
-fn gl_config_picker(mut configs: Box<dyn Iterator<Item = Config> + '_>) -> Config
-{
+fn gl_config_picker(mut configs: Box<dyn Iterator<Item = Config> + '_>) -> Config {
     configs.next().unwrap()
 }
 
 fn create_best_context<UserEventType>(
     window_builder: &WindowBuilder,
     event_loop: &EventLoop<UserEventType>,
-    options: &WindowCreationOptions
-) -> Option<(PossiblyCurrentContext, Window, Surface<WindowSurface>)>
-{
+    options: &WindowCreationOptions,
+) -> Option<(PossiblyCurrentContext, Window, Surface<WindowSurface>)> {
     for multisampling in &[options.multisampling, 16, 8, 4, 2, 1, 0] {
         log::info!("Trying multisampling={}...", multisampling);
 
@@ -711,7 +649,7 @@ fn create_best_context<UserEventType>(
             template = template.with_multisampling(
                 (*multisampling)
                     .try_into()
-                    .expect("Multisampling level out of bounds")
+                    .expect("Multisampling level out of bounds"),
             );
         }
 
@@ -736,9 +674,21 @@ fn create_best_context<UserEventType>(
 
         let gl_display = gl_config.display();
 
-        let context_attributes = ContextAttributesBuilder::new()
-            .with_context_api(ContextApi::OpenGl(Some(Version::new(2, 0))))
-            .build(Some(window.raw_window_handle()));
+        let context_attributes = {
+            #[cfg(target_os = "macos")]
+            {
+                ContextAttributesBuilder::new()
+                    .with_context_api(ContextApi::OpenGl(Some(Version::new(3, 3))))
+                    .with_profile(GlProfile::Core)
+                    .build(Some(window.raw_window_handle()))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                ContextAttributesBuilder::new()
+                    .with_context_api(ContextApi::OpenGl(Some(Version::new(2, 0))))
+                    .build(Some(window.raw_window_handle()))
+            }
+        };
 
         let context =
             match unsafe { gl_display.create_context(&gl_config, &context_attributes) } {
@@ -752,7 +702,7 @@ fn create_best_context<UserEventType>(
         let window = match glutin_winit::finalize_window(
             event_loop,
             window_builder.clone(),
-            &gl_config
+            &gl_config,
         ) {
             Ok(window) => window,
             Err(err) => {
@@ -786,7 +736,7 @@ fn create_best_context<UserEventType>(
         if options.vsync {
             if let Err(err) = surface.set_swap_interval(
                 &context,
-                SwapInterval::Wait(NonZeroU32::new(1).unwrap())
+                SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
             ) {
                 log::error!("Error setting vsync, continuing anyway: {err:?}");
             }
@@ -802,9 +752,8 @@ fn create_best_context<UserEventType>(
 fn position_window(
     monitor: &MonitorHandle,
     window: &GlutinWindow,
-    position: &WindowPosition
-)
-{
+    position: &WindowPosition,
+) {
     let monitor_position = monitor.position();
 
     match position {
@@ -822,20 +771,19 @@ fn position_window(
                 monitor_position.x
                     + ((monitor_size.width as i32 - outer_size.width as i32) / 2),
                 monitor_position.y
-                    + ((monitor_size.height as i32 - outer_size.height as i32) / 2)
+                    + ((monitor_size.height as i32 - outer_size.height as i32) / 2),
             ));
         }
 
         WindowPosition::PrimaryMonitorPixelsFromTopLeft(position) => window
             .set_outer_position(PhysicalPosition::new(
                 monitor_position.x + position.x,
-                monitor_position.y + position.y
-            ))
+                monitor_position.y + position.y,
+            )),
     }
 }
 
-fn compute_window_size(monitor: &MonitorHandle, size: &WindowSize) -> PhysicalSize<u32>
-{
+fn compute_window_size(monitor: &MonitorHandle, size: &WindowSize) -> PhysicalSize<u32> {
     let monitor_size = monitor.size();
 
     match size {
@@ -848,60 +796,56 @@ fn compute_window_size(monitor: &MonitorHandle, size: &WindowSize) -> PhysicalSi
         WindowSize::MarginPhysicalPixels(margin) => {
             let margin_physical_px = std::cmp::min(
                 *margin,
-                std::cmp::min(monitor_size.width, monitor_size.height) / 4
+                std::cmp::min(monitor_size.width, monitor_size.height) / 4,
             );
 
             PhysicalSize::new(
                 monitor_size.width - 2 * margin_physical_px,
-                monitor_size.height - 2 * margin_physical_px
+                monitor_size.height - 2 * margin_physical_px,
             )
         }
 
         WindowSize::MarginScaledPixels(margin) => {
             let margin_physical_px = std::cmp::min(
                 (*margin as f64 * monitor.scale_factor()).round() as u32,
-                std::cmp::min(monitor_size.width, monitor_size.height) / 4
+                std::cmp::min(monitor_size.width, monitor_size.height) / 4,
             );
 
             PhysicalSize::new(
                 monitor_size.width - 2 * margin_physical_px,
-                monitor_size.height - 2 * margin_physical_px
+                monitor_size.height - 2 * margin_physical_px,
             )
         }
     }
 }
 
-impl From<winit::event::MouseButton> for MouseButton
-{
-    fn from(button: winit::event::MouseButton) -> Self
-    {
+impl From<winit::event::MouseButton> for MouseButton {
+    fn from(button: winit::event::MouseButton) -> Self {
         match button {
             winit::event::MouseButton::Left => MouseButton::Left,
             winit::event::MouseButton::Right => MouseButton::Right,
             winit::event::MouseButton::Middle => MouseButton::Middle,
             winit::event::MouseButton::Other(id) => MouseButton::Other(id),
             winit::event::MouseButton::Back => MouseButton::Back,
-            winit::event::MouseButton::Forward => MouseButton::Forward
+            winit::event::MouseButton::Forward => MouseButton::Forward,
         }
     }
 }
 
-impl TryFrom<&KeyEvent> for VirtualKeyCode
-{
+impl TryFrom<&KeyEvent> for VirtualKeyCode {
     type Error = ();
 
-    fn try_from(event: &KeyEvent) -> Result<Self, Self::Error>
-    {
+    fn try_from(event: &KeyEvent) -> Result<Self, Self::Error> {
         let lr_variant =
             |left: VirtualKeyCode, right: VirtualKeyCode| match event.location {
                 KeyLocation::Standard | KeyLocation::Left => left,
-                KeyLocation::Right | KeyLocation::Numpad => right
+                KeyLocation::Right | KeyLocation::Numpad => right,
             };
 
         let numpad_variant =
             |normal: VirtualKeyCode, numpad: VirtualKeyCode| match event.location {
                 KeyLocation::Standard | KeyLocation::Left | KeyLocation::Right => normal,
-                KeyLocation::Numpad => numpad
+                KeyLocation::Numpad => numpad,
             };
 
         Ok(match event.logical_key.clone() {
@@ -977,7 +921,7 @@ impl TryFrom<&KeyEvent> for VirtualKeyCode
                 NamedKey::Shift => lr_variant(Self::LShift, Self::RShift),
                 NamedKey::Tab => Self::Tab,
                 NamedKey::Super => lr_variant(Self::LWin, Self::RWin),
-                _ => return Err(())
+                _ => return Err(()),
             },
             Key::Character(c) => match c.chars().next().unwrap_or('\0') {
                 'A' | 'a' => Self::A,
@@ -1032,77 +976,64 @@ impl TryFrom<&KeyEvent> for VirtualKeyCode
                 ')' => Self::RBracket,
                 '\t' => Self::Tab,
 
-                _ => return Err(())
+                _ => return Err(()),
             },
-            Key::Unidentified(_) | Key::Dead(_) => return Err(())
+            Key::Unidentified(_) | Key::Dead(_) => return Err(()),
         })
     }
 }
 
-impl From<winit::keyboard::ModifiersState> for ModifiersState
-{
-    fn from(state: winit::keyboard::ModifiersState) -> Self
-    {
+impl From<winit::keyboard::ModifiersState> for ModifiersState {
+    fn from(state: winit::keyboard::ModifiersState) -> Self {
         ModifiersState {
             ctrl: state.control_key(),
             alt: state.alt_key(),
             shift: state.shift_key(),
-            logo: state.super_key()
+            logo: state.super_key(),
         }
     }
 }
 
-impl From<PhysicalSize<u32>> for UVec2
-{
-    fn from(value: PhysicalSize<u32>) -> Self
-    {
+impl From<PhysicalSize<u32>> for UVec2 {
+    fn from(value: PhysicalSize<u32>) -> Self {
         Self::new(value.width, value.height)
     }
 }
 
-pub(crate) enum UserEventGlutin<UserEventType: 'static>
-{
+pub(crate) enum UserEventGlutin<UserEventType: 'static> {
     MouseGrabStatusChanged(bool),
     FullscreenStatusChanged(bool),
-    UserEvent(UserEventType)
+    UserEvent(UserEventType),
 }
 
-pub struct UserEventSenderGlutin<UserEventType: 'static>
-{
-    event_proxy: EventLoopProxy<UserEventGlutin<UserEventType>>
+pub struct UserEventSenderGlutin<UserEventType: 'static> {
+    event_proxy: EventLoopProxy<UserEventGlutin<UserEventType>>,
 }
 
-impl<UserEventType> Clone for UserEventSenderGlutin<UserEventType>
-{
-    fn clone(&self) -> Self
-    {
+impl<UserEventType> Clone for UserEventSenderGlutin<UserEventType> {
+    fn clone(&self) -> Self {
         UserEventSenderGlutin {
-            event_proxy: self.event_proxy.clone()
+            event_proxy: self.event_proxy.clone(),
         }
     }
 }
 
-impl<UserEventType> UserEventSenderGlutin<UserEventType>
-{
-    fn new(event_proxy: EventLoopProxy<UserEventGlutin<UserEventType>>) -> Self
-    {
+impl<UserEventType> UserEventSenderGlutin<UserEventType> {
+    fn new(event_proxy: EventLoopProxy<UserEventGlutin<UserEventType>>) -> Self {
         Self { event_proxy }
     }
 
-    pub fn send_event(&self, event: UserEventType) -> Result<(), EventLoopSendError>
-    {
+    pub fn send_event(&self, event: UserEventType) -> Result<(), EventLoopSendError> {
         self.event_proxy
             .send_event(UserEventGlutin::UserEvent(event))
             .map_err(|err| match err {
-                EventLoopClosed(_) => EventLoopSendError::EventLoopNoLongerExists
+                EventLoopClosed(_) => EventLoopSendError::EventLoopNoLongerExists,
             })
     }
 }
 
-impl From<EventLoopError> for BacktraceError<WindowCreationError>
-{
-    fn from(value: EventLoopError) -> Self
-    {
+impl From<EventLoopError> for BacktraceError<WindowCreationError> {
+    fn from(value: EventLoopError) -> Self {
         Self::new_with_cause(WindowCreationError::EventLoopCreationFailed, value)
     }
 }

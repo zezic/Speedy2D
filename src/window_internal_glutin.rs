@@ -73,6 +73,10 @@ pub(crate) struct WindowHelperGlutin<UserEventType: 'static> {
     last_mouse_move_time: Cell<std::time::Instant>,
     last_frame_time: Cell<std::time::Instant>,
     target_frame_interval: std::time::Duration,
+    spin_threshold: std::time::Duration,
+    frame_overhead_compensation: std::time::Duration,
+    frame_times: Cell<[std::time::Duration; 8]>,
+    frame_time_index: Cell<usize>,
 }
 
 impl<UserEventType> WindowHelperGlutin<UserEventType> {
@@ -91,13 +95,29 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
 
         // Calculate target frame interval
         let target_frame_interval = if is_promotion_display {
-            // Target actual refresh rate for ProMotion displays
-            std::time::Duration::from_nanos(
-                1_000_000_000u64 / (refresh_rate as u64 / 1000),
-            )
+            // Target actual refresh rate for ProMotion displays with slight compensation
+            let base_interval = 1_000_000_000u64 / (refresh_rate as u64 / 1000);
+            // Reduce by 2% to account for processing overhead and ensure we hit target FPS
+            let compensated_interval = (base_interval as f64 * 0.98) as u64;
+            std::time::Duration::from_nanos(compensated_interval)
         } else {
             // For 60Hz displays, target 60 FPS
             std::time::Duration::from_nanos(16_666_667) // ~60 FPS
+        };
+
+        // For ProMotion displays, use hybrid sleep + spin-wait approach
+        let spin_threshold = if is_promotion_display {
+            // Spin-wait for the last 500 microseconds for better precision
+            std::time::Duration::from_micros(500)
+        } else {
+            std::time::Duration::from_micros(0)
+        };
+
+        // Additional compensation based on typical frame processing overhead
+        let frame_overhead_compensation = if is_promotion_display {
+            std::time::Duration::from_micros(200) // 200μs compensation
+        } else {
+            std::time::Duration::from_micros(0)
         };
 
         if is_promotion_display {
@@ -123,6 +143,10 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
             last_mouse_move_time: Cell::new(now),
             last_frame_time: Cell::new(now),
             target_frame_interval,
+            spin_threshold,
+            frame_overhead_compensation,
+            frame_times: Cell::new([target_frame_interval; 8]),
+            frame_time_index: Cell::new(0),
         }
     }
 
@@ -157,7 +181,29 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
 
     #[inline]
     pub fn update_frame_time(&self) {
-        self.last_frame_time.set(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        let frame_duration = now - self.last_frame_time.get();
+
+        // Update moving average of frame times for ProMotion displays
+        if self.is_promotion_display {
+            let mut times = self.frame_times.get();
+            let index = self.frame_time_index.get();
+            times[index] = frame_duration;
+            self.frame_times.set(times);
+            self.frame_time_index.set((index + 1) % 8);
+        }
+
+        self.last_frame_time.set(now);
+    }
+
+    pub fn get_average_frame_time(&self) -> std::time::Duration {
+        if !self.is_promotion_display {
+            return self.target_frame_interval;
+        }
+
+        let times = self.frame_times.get();
+        let sum: std::time::Duration = times.iter().sum();
+        sum / times.len() as u32
     }
 
     #[inline]
@@ -603,7 +649,14 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType> {
                 // Check if mouse tracking should be disabled due to inactivity
                 if helper.inner().is_mouse_tracking() {
                     let elapsed = helper.inner().last_mouse_move_time.get().elapsed();
-                    if elapsed > std::time::Duration::from_millis(100) {
+                    // Increase timeout slightly for ProMotion displays to avoid rapid state changes
+                    let timeout = if helper.inner().is_promotion_display() {
+                        std::time::Duration::from_millis(150)
+                    } else {
+                        std::time::Duration::from_millis(100)
+                    };
+
+                    if elapsed > timeout {
                         helper.inner().set_mouse_tracking(false);
                     }
                 }
@@ -612,15 +665,53 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType> {
                     helper.inner().set_redraw_requested(false);
 
                     if helper.inner().is_promotion_display() {
-                        // On ProMotion displays, enforce frame limiting with sleep
+                        // On ProMotion displays, enforce frame limiting with hybrid sleep + spin-wait
                         let elapsed = helper.inner().last_frame_time.get().elapsed();
+                        let target_interval = helper.inner().target_frame_interval;
+                        let compensation = helper.inner().frame_overhead_compensation;
+                        let spin_threshold = helper.inner().spin_threshold;
 
-                        // Always use display refresh rate for smooth rendering
-                        let active_frame_interval = helper.inner().target_frame_interval;
+                        // Use adaptive timing based on recent frame performance
+                        let avg_frame_time = helper.inner().get_average_frame_time();
+                        let adaptive_target = if avg_frame_time > target_interval {
+                            // If we're running slow, be more aggressive
+                            target_interval
+                                .saturating_sub(std::time::Duration::from_micros(100))
+                        } else {
+                            target_interval
+                        };
 
-                        if elapsed < active_frame_interval {
-                            let sleep_time = active_frame_interval - elapsed;
-                            std::thread::sleep(sleep_time);
+                        // Adjust target interval with overhead compensation
+                        let adjusted_target = if adaptive_target > compensation {
+                            adaptive_target - compensation
+                        } else {
+                            adaptive_target
+                        };
+
+                        if elapsed < adjusted_target {
+                            let sleep_time = adjusted_target - elapsed;
+
+                            if sleep_time > spin_threshold {
+                                // Sleep for most of the time, but leave room for spin-wait
+                                let sleep_duration = sleep_time - spin_threshold;
+                                std::thread::sleep(sleep_duration);
+
+                                // Spin-wait for the remaining time for better precision
+                                let start_spin = std::time::Instant::now();
+                                while start_spin.elapsed() < spin_threshold
+                                    && helper.inner().last_frame_time.get().elapsed()
+                                        < adjusted_target
+                                {
+                                    std::hint::spin_loop();
+                                }
+                            } else {
+                                // For very short waits, just spin
+                                while helper.inner().last_frame_time.get().elapsed()
+                                    < adjusted_target
+                                {
+                                    std::hint::spin_loop();
+                                }
+                            }
                         }
 
                         helper.inner().update_frame_time();

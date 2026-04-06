@@ -679,6 +679,13 @@ impl<UserEventType> WindowHelper<UserEventType>
         self.inner.set_size_pixels(size)
     }
 
+    /// Gets the cursor position relative to the window in physical pixels.
+    /// Queries the OS directly — works during file drag on macOS.
+    pub fn get_cursor_position(&self) -> Vec2
+    {
+        self.inner.get_cursor_position()
+    }
+
     /// Gets the window size in pixels.
     pub fn get_size_pixels(&self) -> UVec2
     {

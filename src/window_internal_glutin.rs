@@ -61,6 +61,43 @@ use crate::window::{
 };
 use crate::GLRenderer;
 
+/// Query the OS for the current cursor position relative to the window.
+/// On macOS, CursorMoved events don't fire during external file drags.
+fn get_cursor_in_window(window: &Window) -> Vec2 {
+    #[cfg(target_os = "macos")]
+    {
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct CGPoint { x: f64, y: f64 }
+
+        extern "C" {
+            fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+            fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
+            fn CFRelease(cf: *const std::ffi::c_void);
+        }
+
+        unsafe {
+            let event = CGEventCreate(std::ptr::null());
+            let screen_pos = CGEventGetLocation(event);
+            CFRelease(event);
+
+            if let Ok(win_pos) = window.inner_position() {
+                let scale = window.scale_factor();
+                let x = screen_pos.x * scale - win_pos.x as f64;
+                let y = screen_pos.y * scale - win_pos.y as f64;
+                return Vec2::new(x as f32, y as f32);
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+    }
+
+    Vec2::ZERO
+}
+
 pub(crate) struct WindowHelperGlutin<UserEventType: 'static> {
     window: Rc<Window>,
     event_proxy: EventLoopProxy<UserEventGlutin<UserEventType>>,
@@ -322,6 +359,10 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
         let _ = self
             .window
             .request_inner_size(PhysicalSize::new(size.x, size.y));
+    }
+
+    pub fn get_cursor_position(&self) -> Vec2 {
+        get_cursor_in_window(&self.window)
     }
 
     pub fn get_size_pixels(&self) -> UVec2 {

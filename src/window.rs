@@ -16,6 +16,7 @@
 
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
+use std::path::PathBuf;
 
 use crate::dimen::{IVec2, UVec2, Vec2};
 use crate::error::{BacktraceError, ErrorMessage};
@@ -315,6 +316,38 @@ pub trait WindowHandler<UserEventType = ()>
     )
     {
     }
+
+    /// Invoked when a file is dragged over the window.
+    #[allow(unused_variables)]
+    #[inline]
+    fn on_file_hovered(
+        &mut self,
+        helper: &mut WindowHelper<UserEventType>,
+        path: PathBuf,
+    )
+    {
+    }
+
+    /// Invoked when a dragged file is dropped onto the window.
+    #[allow(unused_variables)]
+    #[inline]
+    fn on_file_dropped(
+        &mut self,
+        helper: &mut WindowHelper<UserEventType>,
+        path: PathBuf,
+    )
+    {
+    }
+
+    /// Invoked when a file drag is cancelled (leaves the window).
+    #[allow(unused_variables)]
+    #[inline]
+    fn on_file_hover_cancelled(
+        &mut self,
+        helper: &mut WindowHelper<UserEventType>
+    )
+    {
+    }
 }
 
 pub(crate) struct DrawingWindowHandler<UserEventType, H>
@@ -498,6 +531,35 @@ where
     {
         self.window_handler
             .on_keyboard_modifiers_changed(helper, state)
+    }
+
+    #[inline]
+    pub fn on_file_hovered(
+        &mut self,
+        helper: &mut WindowHelper<UserEventType>,
+        path: PathBuf,
+    )
+    {
+        self.window_handler.on_file_hovered(helper, path)
+    }
+
+    #[inline]
+    pub fn on_file_dropped(
+        &mut self,
+        helper: &mut WindowHelper<UserEventType>,
+        path: PathBuf,
+    )
+    {
+        self.window_handler.on_file_dropped(helper, path)
+    }
+
+    #[inline]
+    pub fn on_file_hover_cancelled(
+        &mut self,
+        helper: &mut WindowHelper<UserEventType>
+    )
+    {
+        self.window_handler.on_file_hover_cancelled(helper)
     }
 }
 

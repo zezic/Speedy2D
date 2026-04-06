@@ -642,6 +642,18 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType> {
                     helper.inner().set_redraw_requested(true);
                 }
 
+                GlutinWindowEvent::DroppedFile(path) => {
+                    handler.on_file_dropped(helper, path);
+                }
+
+                GlutinWindowEvent::HoveredFile(path) => {
+                    handler.on_file_hovered(helper, path);
+                }
+
+                GlutinWindowEvent::HoveredFileCancelled => {
+                    handler.on_file_hover_cancelled(helper);
+                }
+
                 _ => {}
             },
 

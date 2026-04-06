@@ -3,3 +3,4 @@ Cargo.lock
 .idea
 /.cargo/config.toml
 /examples/webgl/generated
+.DS_Store

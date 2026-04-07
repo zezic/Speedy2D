@@ -455,6 +455,14 @@ impl<UserEventType: 'static> WindowHelperWeb<UserEventType>
         Err(ErrorMessage::msg("Cannot set icon for WebCanvas"))
     }
 
+    pub fn set_cursor_icon(&self, icon: crate::window::CursorIcon) {
+        let web_cursor = match icon {
+            crate::window::CursorIcon::Default => WebCursorType::Auto,
+            crate::window::CursorIcon::NwseResize => WebCursorType::NWSEResize,
+        };
+        self.canvas.set_cursor(web_cursor);
+    }
+
     pub fn set_cursor_visible(&self, visible: bool)
     {
         if visible {

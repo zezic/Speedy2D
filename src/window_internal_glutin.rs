@@ -269,6 +269,14 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
         Ok(())
     }
 
+    pub fn set_cursor_icon(&self, icon: crate::window::CursorIcon) {
+        let winit_icon = match icon {
+            crate::window::CursorIcon::Default => winit::window::CursorIcon::Default,
+            crate::window::CursorIcon::NwseResize => winit::window::CursorIcon::NwseResize,
+        };
+        self.window.set_cursor_icon(winit_icon);
+    }
+
     pub fn set_cursor_visible(&self, visible: bool) {
         self.window.set_cursor_visible(visible);
     }

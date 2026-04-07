@@ -620,6 +620,12 @@ impl<UserEventType> WindowHelper<UserEventType>
         self.inner.set_icon_from_rgba_pixels(data, size.into())
     }
 
+    /// Sets the mouse cursor icon.
+    pub fn set_cursor_icon(&self, icon: CursorIcon)
+    {
+        self.inner.set_cursor_icon(icon)
+    }
+
     /// Sets the visibility of the mouse cursor.
     pub fn set_cursor_visible(&self, visible: bool)
     {
@@ -785,6 +791,16 @@ impl WindowStartupInfo
     {
         &self.viewport_size_pixels
     }
+}
+
+/// The mouse cursor icon.
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub enum CursorIcon
+{
+    /// The default arrow cursor.
+    Default,
+    /// Diagonal resize cursor (NW-SE).
+    NwseResize,
 }
 
 /// Identifies a mouse button.

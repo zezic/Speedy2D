@@ -759,6 +759,19 @@ impl Graphics2D {
         self.renderer.draw_text(position, color, text);
     }
 
+    /// Draws the provided block of text rotated 90 degrees clockwise around
+    /// the given position. Text advances upward (reads bottom-to-top).
+    /// The position is the bottom-left anchor of the rotated block.
+    pub fn draw_text_rotated_90_cw<V: Into<Vec2>>(
+        &mut self,
+        position: V,
+        color: Color,
+        text: &FormattedTextBlock,
+    ) {
+        self.renderer
+            .draw_text_rotated_90_cw(position, color, text);
+    }
+
     /// Draws the provided block of text at the specified position, cropped to
     /// the specified window. Characters outside this window will not be
     /// rendered. Characters partially inside the window will be cropped.

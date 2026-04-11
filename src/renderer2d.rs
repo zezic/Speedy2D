@@ -273,6 +273,14 @@ enum RenderQueueItem {
         crop_window: Rect,
     },
 
+    /// Text block rotated 90 degrees clockwise around the position.
+    /// Characters advance upward (text reads bottom-to-top).
+    FormattedTextBlockRotated90CW {
+        position: Vec2,
+        color: Color,
+        block: FormattedTextBlock,
+    },
+
     CircleSectionColored {
         vertex_positions_clockwise: [Vec2; 3],
         vertex_colors_clockwise: [Color; 3],
@@ -327,6 +335,31 @@ impl RenderQueueItem {
                     Some(crop_window),
                     runner,
                 );
+            }
+
+            RenderQueueItem::FormattedTextBlockRotated90CW {
+                position,
+                color,
+                block,
+            } => {
+                let pivot = *position;
+                for line in block.iter_lines() {
+                    for glyph in line.iter_glyphs() {
+                        glyph_cache.get_renderer2d_actions(
+                            glyph, pivot, *color, None,
+                            &mut |mut action| {
+                                // Rotate each vertex 90 deg CW around pivot:
+                                // (dx, dy) -> (dy, -dx)
+                                for v in &mut action.vertices_clockwise {
+                                    let dx = v.position.x - pivot.x;
+                                    let dy = v.position.y - pivot.y;
+                                    v.position = Vec2::new(pivot.x + dy, pivot.y - dx);
+                                }
+                                runner(action);
+                            },
+                        );
+                    }
+                }
             }
 
             RenderQueueItem::CircleSectionColored {
@@ -574,6 +607,20 @@ impl Renderer2D {
                 } => {
                     self.glyph_cache
                         .add_to_cache(&self.context, glyph, *position);
+                    has_text = true;
+                }
+                RenderQueueItem::FormattedTextBlockRotated90CW {
+                    block, position, ..
+                } => {
+                    for line in block.iter_lines() {
+                        for glyph in line.iter_glyphs() {
+                            self.glyph_cache.add_to_cache(
+                                &self.context,
+                                glyph,
+                                *position,
+                            );
+                        }
+                    }
                     has_text = true;
                 }
                 RenderQueueItem::CircleSectionColored { .. }
@@ -832,6 +879,20 @@ impl Renderer2D {
         text: &FormattedTextBlock,
     ) {
         self.add_to_render_queue(RenderQueueItem::FormattedTextBlock {
+            position: position.into(),
+            color,
+            block: text.clone(),
+        })
+    }
+
+    #[inline]
+    pub(crate) fn draw_text_rotated_90_cw<V: Into<Vec2>>(
+        &mut self,
+        position: V,
+        color: Color,
+        text: &FormattedTextBlock,
+    ) {
+        self.add_to_render_queue(RenderQueueItem::FormattedTextBlockRotated90CW {
             position: position.into(),
             color,
             block: text.clone(),

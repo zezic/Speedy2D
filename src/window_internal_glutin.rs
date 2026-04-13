@@ -98,6 +98,14 @@ fn get_cursor_in_window(window: &Window) -> Vec2 {
     Vec2::ZERO
 }
 
+/// Compute the target frame interval for a given refresh rate in millihertz.
+fn target_interval_for_rate(rate_mhz: u32) -> std::time::Duration {
+    let base_ns = 1_000_000_000u64 / (rate_mhz as u64 / 1000);
+    // Reduce by 2% to account for processing overhead and ensure we hit target.
+    let compensated = (base_ns as f64 * 0.98) as u64;
+    std::time::Duration::from_nanos(compensated)
+}
+
 pub(crate) struct WindowHelperGlutin<UserEventType: 'static> {
     window: Rc<Window>,
     event_proxy: EventLoopProxy<UserEventGlutin<UserEventType>>,
@@ -106,12 +114,15 @@ pub(crate) struct WindowHelperGlutin<UserEventType: 'static> {
     physical_size: UVec2,
     is_mouse_grabbed: Cell<bool>,
     is_mouse_tracking: Cell<bool>,
-    is_promotion_display: bool,
+    /// Software frame timing is active (DontWait + sleep/spin pacing).
+    /// On macOS: always true (OpenGL vsync unreliable above 60Hz).
+    /// On other platforms: true for displays above 60Hz.
+    software_frame_timing: bool,
     last_mouse_move_time: Cell<std::time::Instant>,
     last_frame_time: Cell<std::time::Instant>,
-    target_frame_interval: std::time::Duration,
+    target_frame_interval: Cell<std::time::Duration>,
+    last_known_refresh_rate: Cell<u32>,
     spin_threshold: std::time::Duration,
-    frame_overhead_compensation: std::time::Duration,
     frame_times: Cell<[std::time::Duration; 8]>,
     frame_time_index: Cell<usize>,
 }
@@ -128,44 +139,27 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
             .and_then(|m| m.refresh_rate_millihertz())
             .unwrap_or(60_000);
 
-        let is_promotion_display = refresh_rate > 60_000;
+        // On macOS, OpenGL is deprecated and hardware vsync (SwapInterval::Wait)
+        // is unreliable above 60Hz. Use software frame timing for all displays
+        // so moving between monitors of different refresh rates just works.
+        // On other platforms, only use software timing for high-refresh displays.
+        let software_frame_timing = cfg!(target_os = "macos") || refresh_rate > 60_000;
 
-        // Calculate target frame interval
-        let target_frame_interval = if is_promotion_display {
-            // Target actual refresh rate for ProMotion displays with slight compensation
-            let base_interval = 1_000_000_000u64 / (refresh_rate as u64 / 1000);
-            // Reduce by 2% to account for processing overhead and ensure we hit target FPS
-            let compensated_interval = (base_interval as f64 * 0.98) as u64;
-            std::time::Duration::from_nanos(compensated_interval)
-        } else {
-            // For 60Hz displays, target 60 FPS
-            std::time::Duration::from_nanos(16_666_667) // ~60 FPS
-        };
+        let target_frame_interval = target_interval_for_rate(refresh_rate);
 
-        // For ProMotion displays, use hybrid sleep + spin-wait approach
-        let spin_threshold = if is_promotion_display {
-            // Spin-wait for the last 500 microseconds for better precision
+        let spin_threshold = if software_frame_timing {
             std::time::Duration::from_micros(500)
         } else {
             std::time::Duration::from_micros(0)
         };
 
-        // Additional compensation based on typical frame processing overhead
-        let frame_overhead_compensation = if is_promotion_display {
-            std::time::Duration::from_micros(200) // 200μs compensation
-        } else {
-            std::time::Duration::from_micros(0)
-        };
-
-        if is_promotion_display {
-            log::info!("Detected ProMotion display with refresh rate {}Hz, targeting frame interval {:?}",
-                      refresh_rate / 1000, target_frame_interval);
-            log::info!(
-                "Target FPS: {:.1}",
-                1.0 / target_frame_interval.as_secs_f64()
-            );
-            log::debug!("Frame limiting enabled for ProMotion display");
-        }
+        log::info!(
+            "Display refresh rate: {}Hz, software frame timing: {}, target: {:?} ({:.1} FPS)",
+            refresh_rate / 1000,
+            software_frame_timing,
+            target_frame_interval,
+            1.0 / target_frame_interval.as_secs_f64(),
+        );
 
         let now = std::time::Instant::now();
         WindowHelperGlutin {
@@ -176,12 +170,12 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
             physical_size: initial_physical_size,
             is_mouse_grabbed: Cell::new(false),
             is_mouse_tracking: Cell::new(false),
-            is_promotion_display,
+            software_frame_timing,
             last_mouse_move_time: Cell::new(now),
             last_frame_time: Cell::new(now),
-            target_frame_interval,
+            target_frame_interval: Cell::new(target_frame_interval),
+            last_known_refresh_rate: Cell::new(refresh_rate),
             spin_threshold,
-            frame_overhead_compensation,
             frame_times: Cell::new([target_frame_interval; 8]),
             frame_time_index: Cell::new(0),
         }
@@ -213,7 +207,7 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
 
     #[inline]
     pub fn is_promotion_display(&self) -> bool {
-        self.is_promotion_display
+        self.software_frame_timing
     }
 
     #[inline]
@@ -221,8 +215,7 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
         let now = std::time::Instant::now();
         let frame_duration = now - self.last_frame_time.get();
 
-        // Update moving average of frame times for ProMotion displays
-        if self.is_promotion_display {
+        if self.software_frame_timing {
             let mut times = self.frame_times.get();
             let index = self.frame_time_index.get();
             times[index] = frame_duration;
@@ -233,14 +226,33 @@ impl<UserEventType> WindowHelperGlutin<UserEventType> {
         self.last_frame_time.set(now);
     }
 
-    pub fn get_average_frame_time(&self) -> std::time::Duration {
-        if !self.is_promotion_display {
-            return self.target_frame_interval;
-        }
+    /// Compute the next frame deadline from the last frame time.
+    pub fn next_frame_time(&self) -> std::time::Instant {
+        self.last_frame_time.get() + self.target_frame_interval.get()
+    }
 
-        let times = self.frame_times.get();
-        let sum: std::time::Duration = times.iter().sum();
-        sum / times.len() as u32
+    /// Re-check the current monitor's refresh rate and update the target
+    /// frame interval if the window moved to a different display.
+    pub fn refresh_monitor_timing(&self) {
+        let rate = self.window
+            .current_monitor()
+            .and_then(|m| m.refresh_rate_millihertz())
+            .unwrap_or(60_000);
+
+        if rate != self.last_known_refresh_rate.get() {
+            let interval = target_interval_for_rate(rate);
+            log::info!(
+                "Monitor change: {}Hz -> {}Hz, new target: {:?}",
+                self.last_known_refresh_rate.get() / 1000,
+                rate / 1000,
+                interval,
+            );
+            self.target_frame_interval.set(interval);
+            self.last_known_refresh_rate.set(rate);
+            // Reset frame time history to avoid stale averages.
+            self.frame_times.set([interval; 8]);
+            self.frame_time_index.set(0);
+        }
     }
 
     #[inline]
@@ -723,63 +735,28 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType> {
                 }
 
                 if helper.inner().is_redraw_requested() {
-                    helper.inner().set_redraw_requested(false);
-
                     if helper.inner().is_promotion_display() {
-                        // On ProMotion displays, enforce frame limiting with hybrid sleep + spin-wait
-                        let elapsed = helper.inner().last_frame_time.get().elapsed();
-                        let target_interval = helper.inner().target_frame_interval;
-                        let compensation = helper.inner().frame_overhead_compensation;
-                        let spin_threshold = helper.inner().spin_threshold;
+                        // Software frame timing: ControlFlow::WaitUntil brings
+                        // us close to the deadline; spin the final stretch for
+                        // sub-millisecond precision.
+                        let deadline = helper.inner().next_frame_time();
+                        let wake_threshold = deadline - helper.inner().spin_threshold;
+                        let now = std::time::Instant::now();
 
-                        // Use adaptive timing based on recent frame performance
-                        let avg_frame_time = helper.inner().get_average_frame_time();
-                        let adaptive_target = if avg_frame_time > target_interval {
-                            // If we're running slow, be more aggressive
-                            target_interval
-                                .saturating_sub(std::time::Duration::from_micros(100))
-                        } else {
-                            target_interval
-                        };
-
-                        // Adjust target interval with overhead compensation
-                        let adjusted_target = if adaptive_target > compensation {
-                            adaptive_target - compensation
-                        } else {
-                            adaptive_target
-                        };
-
-                        if elapsed < adjusted_target {
-                            let sleep_time = adjusted_target - elapsed;
-
-                            if sleep_time > spin_threshold {
-                                // Sleep for most of the time, but leave room for spin-wait
-                                let sleep_duration = sleep_time - spin_threshold;
-                                std::thread::sleep(sleep_duration);
-
-                                // Spin-wait for the remaining time for better precision
-                                let start_spin = std::time::Instant::now();
-                                while start_spin.elapsed() < spin_threshold
-                                    && helper.inner().last_frame_time.get().elapsed()
-                                        < adjusted_target
-                                {
-                                    std::hint::spin_loop();
-                                }
-                            } else {
-                                // For very short waits, just spin
-                                while helper.inner().last_frame_time.get().elapsed()
-                                    < adjusted_target
-                                {
-                                    std::hint::spin_loop();
-                                }
+                        if now >= wake_threshold {
+                            while std::time::Instant::now() < deadline {
+                                std::hint::spin_loop();
                             }
+                            helper.inner().set_redraw_requested(false);
+                            helper.inner().refresh_monitor_timing();
+                            helper.inner().update_frame_time();
+                            handler.on_draw(helper);
+                            surface.swap_buffers(context).unwrap();
                         }
-
-                        helper.inner().update_frame_time();
-                        handler.on_draw(helper);
-                        surface.swap_buffers(context).unwrap();
+                        // else: WaitUntil will wake us closer to the deadline.
                     } else {
-                        // Standard behavior for non-ProMotion displays
+                        // Hardware vsync handles pacing.
+                        helper.inner().set_redraw_requested(false);
                         helper.inner().update_frame_time();
                         handler.on_draw(helper);
                         surface.swap_buffers(context).unwrap();
@@ -848,9 +825,16 @@ impl<UserEventType: 'static> WindowGlutin<UserEventType> {
                         WindowEventLoopAction::Continue => {
                             #[cfg(target_os = "macos")]
                             {
-                                if helper.inner().is_promotion_display() {
-                                    // Always poll for ProMotion displays - frame limiting handled by sleep
-                                    target.set_control_flow(ControlFlow::Poll);
+                                if helper.inner().is_promotion_display()
+                                    && helper.inner().is_redraw_requested()
+                                {
+                                    // Wake just before the frame deadline so the
+                                    // spin-wait in AboutToWait can finish precisely.
+                                    // Events arriving earlier still get processed
+                                    // (WaitUntil doesn't block event dispatch).
+                                    let wake = helper.inner().next_frame_time()
+                                        - helper.inner().spin_threshold;
+                                    target.set_control_flow(ControlFlow::WaitUntil(wake));
                                 } else if helper.inner().is_redraw_requested() {
                                     target.set_control_flow(ControlFlow::Poll);
                                 } else {
@@ -993,30 +977,15 @@ fn create_best_context<UserEventType>(
         };
 
         if options.vsync {
-            // On macOS ProMotion displays, use adaptive sync for better mouse responsiveness
+            // On macOS, always use DontWait and let software frame timing
+            // handle pacing. This avoids reliance on macOS's deprecated
+            // OpenGL vsync which is unreliable above 60Hz, and allows
+            // seamless transitions when moving between displays.
             #[cfg(target_os = "macos")]
             {
-                let is_promotion_display = window
-                    .current_monitor()
-                    .and_then(|m| m.refresh_rate_millihertz())
-                    .map(|rate| rate > 60_000)
-                    .unwrap_or(false);
-
-                let swap_interval = if is_promotion_display {
-                    log::info!("Using DontWait VSync for ProMotion display with software frame limiting");
-                    SwapInterval::DontWait
-                } else {
-                    SwapInterval::Wait(NonZeroU32::new(1).unwrap())
-                };
-
-                if let Err(err) = surface.set_swap_interval(&context, swap_interval) {
-                    log::warn!("Failed to set preferred swap interval, falling back to standard VSync: {err:?}");
-                    if let Err(err) = surface.set_swap_interval(
-                        &context,
-                        SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
-                    ) {
-                        log::error!("Error setting vsync, continuing anyway: {err:?}");
-                    }
+                log::info!("macOS: using DontWait with software frame timing");
+                if let Err(err) = surface.set_swap_interval(&context, SwapInterval::DontWait) {
+                    log::warn!("Failed to set DontWait swap interval: {err:?}");
                 }
             }
             #[cfg(not(target_os = "macos"))]

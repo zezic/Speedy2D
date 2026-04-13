@@ -322,7 +322,8 @@ impl<T: num_traits::AsPrimitive<f32> + Copy> Rectangle<T>
 #[derive(Debug, Clone)]
 pub struct Polygon
 {
-    pub(crate) triangles: Vec<[Vec2; 3]>
+    /// Pre-computed triangles from ear-cutting triangulation.
+    pub triangles: Vec<[Vec2; 3]>
 }
 
 impl Polygon
